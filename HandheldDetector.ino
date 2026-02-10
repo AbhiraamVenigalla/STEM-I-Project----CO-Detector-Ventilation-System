@@ -1,126 +1,118 @@
-/*
- * Sensor Data Recorder for MQ-7 and BME280
- * Records CO gas levels, temperature, humidity, and pressure
- * 
- * Hardware Connections:
- * MQ-7: Analog output to GPIO 14
- * BME280: I2C (SDA to GPIO 32, SCL to GPIO 25)
- */
-
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
-// Pin definitions
 const int MQ7_PIN = 14;
 const int BME_SDA = 32;
 const int BME_SCL = 25;
 
-// BME280 sensor object
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
 Adafruit_BME280 bme;
 
-// Variables
-float mq7_voltage;
-float mq7_ppm;
-float temperature;
-float humidity;
-float pressure;
-float altitude;
+float mq7_voltage, mq7_ppm, temperature, humidity, pressure;
 
-// Sampling interval
+BLECharacteristic *pCharacteristic;
+bool deviceConnected = false;
+
 unsigned long previousMillis = 0;
-const long interval = 1000; // 1 second between readings
+const long interval = 1000;
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("BLE: Device connected");
+  }
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    Serial.println("BLE: Device disconnected, restarting advertising...");
+    BLEDevice::startAdvertising();
+  }
+};
 
 void setup() {
-  // Initialize serial communication
   Serial.begin(9600);
   delay(1000);
-  
-  // Initialize I2C with defined pins
+
   Wire.begin(BME_SDA, BME_SCL);
-  
-  // Initialize BME280
+
   if (!bme.begin(0x76)) {
     if (!bme.begin(0x77)) {
       Serial.println("ERROR: BME280 not found!");
       while (1) delay(1000);
     }
   }
-  
-  // Configure BME280 settings
+
   bme.setSampling(Adafruit_BME280::MODE_NORMAL,
                   Adafruit_BME280::SAMPLING_X2,
                   Adafruit_BME280::SAMPLING_X16,
                   Adafruit_BME280::SAMPLING_X1,
                   Adafruit_BME280::FILTER_X16,
                   Adafruit_BME280::STANDBY_MS_500);
-  
-  // Print formatted header
-  Serial.println("\n========================================");
-  Serial.println("   MQ-7 & BME280 Sensor Data Logger");
-  Serial.println("========================================");
-  Serial.println("MQ-7 Range: 0-1V = 0-10,000 PPM");
-  Serial.println("========================================\n");
-  
-  delay(2000);
+
+  BLEDevice::init("CODetect");
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ |
+    BLECharacteristic::PROPERTY_WRITE |
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+
+  pCharacteristic->addDescriptor(new BLE2902());
+  pCharacteristic->setValue("ready");
+
+  pService->start();
+
+  // Advertise service UUID so apps can discover it
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+
+  Serial.println("BLE Server running - device name: CODetect");
 }
 
 void loop() {
   unsigned long currentMillis = millis();
-  
+
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
-    
-    readMQ7();
-    readBME280();
-    printData();
-    Serial.flush();
+
+    // Read MQ-7
+    int sensorValue = analogRead(MQ7_PIN);
+    mq7_voltage = sensorValue * (3.3 / 4095.0);
+    mq7_ppm = mq7_voltage * 100.0;
+
+    // Read BME280
+    temperature = bme.readTemperature();
+    humidity = bme.readHumidity();
+    pressure = bme.readPressure() / 100.0F;
+
+    // Serial debug
+    Serial.print("CO: "); Serial.print(mq7_ppm); Serial.print(" PPM | ");
+    Serial.print("Temp: "); Serial.print(temperature); Serial.print(" C | ");
+    Serial.print("Hum: "); Serial.print(humidity); Serial.println(" %");
+
+    // Send over BLE
+    if (deviceConnected) {
+      String json = "{\"temp\":" + String(temperature, 1) +
+                    ",\"humidity\":" + String(humidity, 1) +
+                    ",\"co\":" + String(mq7_ppm, 1) + "}";
+      pCharacteristic->setValue(json.c_str());
+      pCharacteristic->notify();
+      Serial.print("BLE Sent: "); Serial.println(json);
+    }
   }
-}
-
-void readMQ7() {
-  int sensorValue = analogRead(MQ7_PIN);
-  mq7_voltage = sensorValue * (3.3 / 4095.0);
-  
-  // Scale voltage to PPM: 0V = 0 PPM, 1V = 10,000 PPM
-  mq7_ppm = mq7_voltage * 100.0;
-}
-
-void readBME280() {
-  temperature = bme.readTemperature();
-  humidity = bme.readHumidity();
-  pressure = bme.readPressure() / 100.0F;
-  altitude = bme.readAltitude(1013.25);
-}
-
-void printData() {
-  Serial.println("----------------------------------------");
-  Serial.print("Time: ");
-  Serial.print(millis() / 1000);
-  Serial.println(" seconds");
-  Serial.println();
-  
-  Serial.println("MQ-7 CO Sensor:");
-  Serial.print("  Voltage: ");
-  Serial.print(mq7_voltage, 4);
-  Serial.println(" V");
-  Serial.print("  CO Level: ");
-  Serial.print(mq7_ppm, 2);
-  Serial.println(" PPM");
-  Serial.println();
-  
-  Serial.println("BME280 Environmental Sensor:");
-  Serial.print("  Temperature: ");
-  Serial.print(temperature, 2);
-  Serial.println(" °C");
-  Serial.print("  Humidity: ");
-  Serial.print(humidity, 2);
-  Serial.println(" %");
-  Serial.print("  Pressure: ");
-  Serial.print(pressure, 2);
-  Serial.println(" hPa");
-  Serial.print("  Altitude: ");
-  Serial.print(altitude, 2);
-  Serial.println(" m");
-  Serial.println();
 }
