@@ -1,0 +1,16 @@
+{
+	"appId": "com.codetect.app",
+	"appName": "CODetect",
+	"webDir": "dist",
+	"plugins": {
+		"SplashScreen": {
+			"launchAutoHide": false
+		}
+	},
+	"packageClassList": [
+		"BluetoothLe",
+		"CAPCameraPlugin",
+		"LocalNotificationsPlugin",
+		"SplashScreenPlugin"
+	]
+}
