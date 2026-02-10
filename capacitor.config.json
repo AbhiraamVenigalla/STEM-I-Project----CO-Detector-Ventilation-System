@@ -1,0 +1,10 @@
+{
+  "appId": "com.codetect.app",
+  "appName": "CODetect",
+  "webDir": "dist",
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false
+    }
+  }
+}
